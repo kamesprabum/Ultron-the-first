@@ -1,36 +1,28 @@
-This is a [Next.js](https://nextjs.org) project bootstrapped with [`create-next-app`](https://nextjs.org/docs/app/api-reference/cli/create-next-app).
+# Jarvis Control Center
 
-## Getting Started
+A privacy-conscious, voice-first personal AI control center built with Next.js, Gemini, ElevenLabs, and Convex. The interface deliberately presents unavailable integrations as unconfigured rather than displaying sample data.
 
-First, run the development server:
+## Run locally
 
 ```bash
+npm install
+cp .env.example .env.local
 npm run dev
-# or
-yarn dev
-# or
-pnpm dev
-# or
-bun dev
 ```
 
-Open [http://localhost:3000](http://localhost:3000) with your browser to see the result.
+Open `http://localhost:3000`. Add `GEMINI_API_KEY` to enable the secure `/api/assistant` route. It is never exposed to the browser.
 
-You can start editing the page by modifying `app/page.tsx`. The page auto-updates as you edit the file.
+## Services
 
-This project uses [`next/font`](https://nextjs.org/docs/app/building-your-application/optimizing/fonts) to automatically optimize and load [Geist](https://vercel.com/font), a new font family for Vercel.
+- **Gemini:** create a Google AI Studio key and set `GEMINI_API_KEY`.
+- **ElevenLabs:** create an API key and choose a voice ID; set both ElevenLabs variables. The server-only provider lives in `src/services/voice`.
+- **Google:** create a Google OAuth web client, set its client ID and secret, then implement the redirect/callback URLs for your deployment. Request only Calendar, Gmail read-only, and Tasks scopes that you enable.
+- **Convex:** run `npx convex dev`, accept the generated deployment values, and place them in `.env.local`. The complete initial schema is in `convex/schema.ts`.
 
-## Learn More
+## Architecture
 
-To learn more about Next.js, take a look at the following resources:
+`src/services` holds replaceable external providers; `src/app/api` performs server-side validation and orchestration; `convex` owns realtime persisted state. Add tool adapters under `src/tools` and require confirmation before executing destructive actions. Never let a model write directly to Convex or call Google APIs without server-side validation.
 
-- [Next.js Documentation](https://nextjs.org/docs) - learn about Next.js features and API.
-- [Learn Next.js](https://nextjs.org/learn) - an interactive Next.js tutorial.
+## Current implementation boundary
 
-You can check out [the Next.js GitHub repository](https://github.com/vercel/next.js) - your feedback and contributions are welcome!
-
-## Deploy on Vercel
-
-The easiest way to deploy your Next.js app is to use the [Vercel Platform](https://vercel.com/new?utm_medium=default-template&filter=next.js&utm_source=create-next-app&utm_campaign=create-next-app-readme) from the creators of Next.js.
-
-Check out our [Next.js deployment documentation](https://nextjs.org/docs/app/building-your-application/deploying) for more details.
+The dashboard, command palette, keyboard controls, request states, Gemini chat endpoint, ElevenLabs provider, environment contract, and Convex schema are implemented. Google OAuth, tool executors, authentication, and Convex subscriptions require your project credentials and should be added before production use. No mock calendar, task, email, or memory records are used.

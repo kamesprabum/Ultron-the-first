@@ -1,26 +1,6 @@
 @import "tailwindcss";
-
-:root {
-  --background: #ffffff;
-  --foreground: #171717;
-}
-
-@theme inline {
-  --color-background: var(--background);
-  --color-foreground: var(--foreground);
-  --font-sans: var(--font-geist-sans);
-  --font-mono: var(--font-geist-mono);
-}
-
-@media (prefers-color-scheme: dark) {
-  :root {
-    --background: #0a0a0a;
-    --foreground: #ededed;
-  }
-}
-
-body {
-  background: var(--background);
-  color: var(--foreground);
-  font-family: Arial, Helvetica, sans-serif;
-}
+:root { --ink:#e9f5f7; --muted:#789198; --line:rgba(151,222,229,.14); }
+* { box-sizing:border-box; } body { min-height:100vh; margin:0; color:var(--ink); background:radial-gradient(circle at 50% -20%,#153d42,#09191d 37%,#061012 70%); font-family:Arial,Helvetica,sans-serif; }
+.grid-bg { background-image:linear-gradient(rgba(117,237,243,.035) 1px,transparent 1px),linear-gradient(90deg,rgba(117,237,243,.035) 1px,transparent 1px); background-size:46px 46px; }
+.panel { border:1px solid var(--line); background:linear-gradient(135deg,rgba(22,51,55,.58),rgba(8,24,27,.7)); box-shadow:inset 0 1px rgba(255,255,255,.025),0 20px 60px rgba(0,0,0,.15); backdrop-filter:blur(16px); }
+.orb { box-shadow:0 0 0 1px rgba(117,237,243,.28),0 0 34px rgba(79,205,211,.16),inset 0 0 25px rgba(117,237,243,.18); }.orb::before,.orb::after { content:""; position:absolute; inset:-17px; border:1px solid rgba(117,237,243,.16); border-radius:inherit; }.orb::after { inset:-34px; border-color:rgba(117,237,243,.07); }.listening { animation:breathe 1.15s ease-in-out infinite; } @keyframes breathe {50% {transform:scale(1.045);box-shadow:0 0 0 8px rgba(117,237,243,.05),0 0 54px rgba(79,205,211,.3),inset 0 0 30px rgba(117,237,243,.23)}}
