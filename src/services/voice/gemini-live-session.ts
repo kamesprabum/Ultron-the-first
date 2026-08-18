@@ -1,11 +1,12 @@
 import "server-only";
 import { GoogleGenAI, Modality } from "@google/genai";
+import { JARVIS_SYSTEM_INSTRUCTION } from "../ai/personality";
 import type { EphemeralSessionResponse } from "./types";
 
 const DEFAULT_LIVE_MODEL = "gemini-3.1-flash-live-preview";
 const DEFAULT_VOICE_NAME = "Puck";
 
-const systemInstruction = `You are JARVIS, a calm, concise, professional personal operating-system assistant. Keep spoken answers concise, conversational, and direct. Explain that connected services must be configured when a request requires them. Do not claim that an action was executed unless a tool returned success.`;
+const systemInstruction = JARVIS_SYSTEM_INSTRUCTION;
 
 export async function createLiveEphemeralToken(): Promise<EphemeralSessionResponse> {
   const apiKey = process.env.GEMINI_API_KEY;

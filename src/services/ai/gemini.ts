@@ -1,12 +1,18 @@
 import "server-only";
 import { GoogleGenAI } from "@google/genai";
+import { JARVIS_SYSTEM_INSTRUCTION } from "./personality";
+import {
+  getIntegrationsStatus,
+  executeGmailFetch,
+  executeCalendarFetch,
+} from "@/services/integrations/composio";
 
 export interface ChatMessage {
   role: "user" | "assistant";
   content: string;
 }
 
-const systemInstruction = `You are JARVIS, a calm, concise, professional personal operating-system assistant. Never invent calendar, email, task, memory, or tool results. Explain that connected services must be configured when a request requires them. Do not claim that an action was executed unless a tool returned success.`;
+const systemInstruction = JARVIS_SYSTEM_INSTRUCTION;
 
 const DEFAULT_MODEL = "gemini-3.5-flash-lite";
 
@@ -28,7 +34,7 @@ function getClient(): GoogleGenAI {
   });
 }
 
-function buildContents(history: ChatMessage[], currentMessage: string) {
+function buildContents(history: ChatMessage[], currentMessage: string, extraContext?: string) {
   const contents: Array<{ role: "user" | "model"; parts: Array<{ text: string }> }> = [];
 
   for (const msg of history) {
@@ -41,12 +47,34 @@ function buildContents(history: ChatMessage[], currentMessage: string) {
     });
   }
 
+  const promptText = extraContext
+    ? `[SYSTEM CONTEXT FROM CONNECTED SERVICE]\n${extraContext}\n\n[USER QUERY]\n${currentMessage.trim()}`
+    : currentMessage.trim();
+
   contents.push({
     role: "user",
-    parts: [{ text: currentMessage.trim() }],
+    parts: [{ text: promptText }],
   });
 
   return contents;
+}
+
+function detectServiceIntent(query: string): "gmail" | "calendar" | null {
+  const lower = query.toLowerCase();
+
+  const isGmail =
+    /\b(gmail|email|emails|inbox|messages|unread)\b/.test(lower) &&
+    /\b(check|read|get|fetch|show|list|find|what|any|my|latest|recent)\b/.test(lower);
+
+  if (isGmail) return "gmail";
+
+  const isCalendar =
+    /\b(calendar|schedule|agenda|events|meetings|appointments)\b/.test(lower) &&
+    /\b(what|check|show|list|get|today|tomorrow|upcoming|my)\b/.test(lower);
+
+  if (isCalendar) return "calendar";
+
+  return null;
 }
 
 export async function* streamJarvisResponse(
@@ -57,6 +85,95 @@ export async function* streamJarvisResponse(
   const t0 = Date.now();
   console.log(`[AI timing] Request started at ${new Date(t0).toISOString()}`);
 
+  const intent = detectServiceIntent(message);
+
+  if (intent === "gmail") {
+    const status = await getIntegrationsStatus();
+    if (!status.gmail.connected) {
+      console.log("[AI] Gmail is not connected. Yielding connection request.");
+      yield "Your Gmail isn't connected yet. Connect it and I'll check your emails. [ACTION:CONNECT_GMAIL]";
+      return;
+    }
+
+    try {
+      console.log("[AI] Gmail is connected. Fetching emails via Composio...");
+      const emailData = await executeGmailFetch({ maxResults: 5 });
+      const emailSummaryContext = JSON.stringify(emailData, null, 2);
+
+      const ai = getClient();
+      const model = process.env.GEMINI_MODEL?.trim() || DEFAULT_MODEL;
+      const contents = buildContents(
+        history,
+        message,
+        `Retrieved live emails from user's connected Gmail account:\n${emailSummaryContext}`
+      );
+
+      const responseStream = await ai.models.generateContentStream({
+        model,
+        contents,
+        config: {
+          systemInstruction,
+          temperature: 0.35,
+          abortSignal,
+        },
+      });
+
+      for await (const chunk of responseStream) {
+        if (abortSignal?.aborted) return;
+        if (chunk.text) yield chunk.text;
+      }
+      return;
+    } catch (err) {
+      console.error("[AI] Error executing Gmail tool:", err);
+      yield "I encountered an issue fetching your emails. Please verify your Gmail connection in settings.";
+      return;
+    }
+  }
+
+  if (intent === "calendar") {
+    const status = await getIntegrationsStatus();
+    if (!status.calendar.connected) {
+      console.log("[AI] Google Calendar is not connected. Yielding connection request.");
+      yield "Your Google Calendar isn't connected yet. Connect it and I'll check today's schedule. [ACTION:CONNECT_CALENDAR]";
+      return;
+    }
+
+    try {
+      console.log("[AI] Google Calendar is connected. Fetching events via Composio...");
+      const calendarData = await executeCalendarFetch({ maxResults: 5 });
+      const calendarSummaryContext = JSON.stringify(calendarData, null, 2);
+
+      const ai = getClient();
+      const model = process.env.GEMINI_MODEL?.trim() || DEFAULT_MODEL;
+      const contents = buildContents(
+        history,
+        message,
+        `Retrieved live calendar events from user's connected Google Calendar:\n${calendarSummaryContext}`
+      );
+
+      const responseStream = await ai.models.generateContentStream({
+        model,
+        contents,
+        config: {
+          systemInstruction,
+          temperature: 0.35,
+          abortSignal,
+        },
+      });
+
+      for await (const chunk of responseStream) {
+        if (abortSignal?.aborted) return;
+        if (chunk.text) yield chunk.text;
+      }
+      return;
+    } catch (err) {
+      console.error("[AI] Error executing Google Calendar tool:", err);
+      yield "I encountered an issue fetching your calendar schedule. Please verify your Google Calendar connection in settings.";
+      return;
+    }
+  }
+
+  // Standard conversation streaming
   const ai = getClient();
   const model = process.env.GEMINI_MODEL?.trim() || DEFAULT_MODEL;
   const contents = buildContents(history, message);

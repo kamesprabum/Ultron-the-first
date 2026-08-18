@@ -18,6 +18,11 @@ interface ChatHistoryItem {
   content: string;
 }
 
+interface IntegrationState {
+  connected: boolean;
+  email: string | null;
+}
+
 export function ControlCenter() {
   const [textState, setTextState] = useState<TextState>("IDLE");
   const [time, setTime] = useState("");
@@ -26,6 +31,13 @@ export function ControlCenter() {
   const [palette, setPalette] = useState(false);
   const [activity, setActivity] = useState<string[]>(["System ready", "Voice & Text online"]);
   const [history, setHistory] = useState<ChatHistoryItem[]>([]);
+  const [integrations, setIntegrations] = useState<{
+    gmail: IntegrationState;
+    calendar: IntegrationState;
+  }>({
+    gmail: { connected: false, email: null },
+    calendar: { connected: false, email: null },
+  });
 
   const abortControllerRef = useRef<AbortController | null>(null);
 
@@ -36,6 +48,59 @@ export function ControlCenter() {
   const handleTranscript = useCallback((text: string) => {
     setReply((prev) => prev + text);
   }, []);
+
+  const refreshIntegrations = useCallback(() => {
+    fetch("/api/integrations/status")
+      .then((res) => (res.ok ? res.json() : null))
+      .then((data) => {
+        if (data) {
+          setIntegrations({
+            gmail: data.gmail || { connected: false, email: null },
+            calendar: data.calendar || { connected: false, email: null },
+          });
+        }
+      })
+      .catch(() => {});
+  }, []);
+
+  useEffect(() => {
+    refreshIntegrations();
+
+    if (typeof window !== "undefined") {
+      const params = new URLSearchParams(window.location.search);
+      const connected = params.get("connected");
+      if (connected) {
+        window.history.replaceState({}, "", "/");
+        setTimeout(() => {
+          addActivity(`${connected === "gmail" ? "Gmail" : "Google Calendar"} connected successfully`);
+        }, 0);
+      }
+    }
+  }, [refreshIntegrations, addActivity]);
+
+  const connectService = useCallback(
+    async (service: "gmail" | "googlecalendar") => {
+      addActivity(`Initiating ${service === "gmail" ? "Gmail" : "Google Calendar"} connection…`);
+      try {
+        const res = await fetch(
+          `/api/integrations/${service === "gmail" ? "gmail" : "calendar"}/connect`,
+          {
+            method: "POST",
+          }
+        );
+        const data = await res.json();
+        if (data.redirectUrl) {
+          window.location.href = data.redirectUrl;
+        } else {
+          throw new Error(data.error || "No redirect URL returned");
+        }
+      } catch (err) {
+        const msg = err instanceof Error ? err.message : "Failed to connect";
+        addActivity(`Connection error: ${msg}`);
+      }
+    },
+    [addActivity]
+  );
 
   const {
     voiceState,
@@ -202,6 +267,13 @@ export function ControlCenter() {
     return TEXT_STATE_LABELS[textState];
   };
 
+  const hasConnectGmail = reply.includes("[ACTION:CONNECT_GMAIL]");
+  const hasConnectCalendar = reply.includes("[ACTION:CONNECT_CALENDAR]");
+  const cleanReply = reply
+    .replace("[ACTION:CONNECT_GMAIL]", "")
+    .replace("[ACTION:CONNECT_CALENDAR]", "")
+    .trim();
+
   return (
     <main className="grid-bg min-h-screen px-4 py-5 sm:px-8">
       <header className="mx-auto flex max-w-7xl items-center justify-between border-b border-[var(--line)] pb-5">
@@ -229,9 +301,26 @@ export function ControlCenter() {
 
       <section className="mx-auto grid max-w-7xl gap-5 pt-8 lg:grid-cols-[1fr_1.55fr_1fr]">
         <aside className="space-y-5">
-          <Overview title="CALENDAR" caption="Connect Google Calendar" icon="◫" />
-          <Overview title="TASKS" caption="Connect Convex to sync tasks" icon="✓" />
-          <Overview title="INBOX" caption="Connect Gmail" icon="✉" />
+          <Overview
+            title="CALENDAR"
+            caption={integrations.calendar.connected ? "Connected · Google Calendar" : "Connect Google Calendar"}
+            icon="◫"
+            isConnected={integrations.calendar.connected}
+            onConfigure={() => connectService("googlecalendar")}
+          />
+          <Overview
+            title="TASKS"
+            caption="Connect Convex to sync tasks"
+            icon="✓"
+            isConnected={false}
+          />
+          <Overview
+            title="INBOX"
+            caption={integrations.gmail.connected ? "Connected · Gmail" : "Connect Gmail"}
+            icon="✉"
+            isConnected={integrations.gmail.connected}
+            onConfigure={() => connectService("gmail")}
+          />
         </aside>
 
         <section className="panel relative flex min-h-[530px] flex-col items-center justify-center overflow-hidden rounded-2xl px-5 py-10 text-center">
@@ -271,8 +360,24 @@ export function ControlCenter() {
                 ? transcript
                 : voiceError
                 ? voiceError
-                : reply || (displayState === "THINKING" ? "Thinking…" : "")}
+                : cleanReply || (displayState === "THINKING" ? "Thinking…" : "")}
             </p>
+            {hasConnectGmail && (
+              <button
+                onClick={() => connectService("gmail")}
+                className="mt-3 inline-flex items-center gap-1.5 rounded-lg bg-cyan-200 px-3.5 py-1.5 text-xs font-medium text-[#062226] shadow-sm transition-opacity hover:opacity-90"
+              >
+                ✉ Connect Gmail
+              </button>
+            )}
+            {hasConnectCalendar && (
+              <button
+                onClick={() => connectService("googlecalendar")}
+                className="mt-3 inline-flex items-center gap-1.5 rounded-lg bg-cyan-200 px-3.5 py-1.5 text-xs font-medium text-[#062226] shadow-sm transition-opacity hover:opacity-90"
+              >
+                ◫ Connect Google Calendar
+              </button>
+            )}
           </div>
 
           <form onSubmit={askText} className="mt-8 flex w-full max-w-xl gap-2 rounded-xl border border-[var(--line)] bg-black/15 p-1.5">
@@ -382,16 +487,33 @@ export function ControlCenter() {
   );
 }
 
-function Overview({ title, caption, icon }: { title: string; caption: string; icon: string }) {
+function Overview({
+  title,
+  caption,
+  icon,
+  isConnected,
+  onConfigure,
+}: {
+  title: string;
+  caption: string;
+  icon: string;
+  isConnected?: boolean;
+  onConfigure?: () => void;
+}) {
   return (
     <section className="panel rounded-2xl p-5">
       <div className="flex items-start justify-between">
         <p className="text-[11px] tracking-[.18em] text-[var(--muted)]">{title}</p>
         <span className="text-lg text-cyan-100">{icon}</span>
       </div>
-      <p className="mt-7 text-3xl font-light text-cyan-50">—</p>
+      <p className="mt-7 text-3xl font-light text-cyan-50">{isConnected ? "●" : "—"}</p>
       <p className="mt-2 text-xs text-[var(--muted)]">{caption}</p>
-      <button className="mt-5 text-xs text-cyan-200">Configure →</button>
+      <button
+        onClick={onConfigure}
+        className="mt-5 text-xs text-cyan-200 transition-colors hover:text-cyan-100"
+      >
+        {isConnected ? "Connected · Reconnect →" : "Configure →"}
+      </button>
     </section>
   );
 }
