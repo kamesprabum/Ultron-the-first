@@ -69,13 +69,30 @@ export function ControlCenter() {
 
     if (typeof window !== "undefined") {
       const params = new URLSearchParams(window.location.search);
-      const connected = params.get("connected");
-      if (connected) {
+      const integration = params.get("integration") || params.get("connected");
+      const isConnected =
+        params.get("connected") === "1" ||
+        params.get("connected") === "gmail" ||
+        params.get("connected") === "googlecalendar";
+      const error = params.get("error");
+
+      if (integration && isConnected) {
+        const serviceName = integration === "gmail" ? "Gmail" : "Google Calendar";
         window.history.replaceState({}, "", "/");
         setTimeout(() => {
-          addActivity(`${connected === "gmail" ? "Gmail" : "Google Calendar"} connected successfully`);
+          addActivity(`${serviceName} connected successfully`);
+          refreshIntegrations();
+        }, 0);
+      } else if (error) {
+        window.history.replaceState({}, "", "/");
+        setTimeout(() => {
+          addActivity(`Authentication failed: ${error}`);
         }, 0);
       }
+
+      const handleFocus = () => refreshIntegrations();
+      window.addEventListener("focus", handleFocus);
+      return () => window.removeEventListener("focus", handleFocus);
     }
   }, [refreshIntegrations, addActivity]);
 

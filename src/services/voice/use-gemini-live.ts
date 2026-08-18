@@ -172,6 +172,58 @@ export function useGeminiLive(options: UseGeminiLiveOptions = {}) {
               console.log("[LiveClient] Gemini Live setupComplete confirmed by server");
             }
 
+            if (msg.toolCall) {
+              const functionCalls = msg.toolCall.functionCalls || [];
+              console.log(
+                `[LiveClient] Received ${functionCalls.length} tool call(s) from Gemini Live:`,
+                functionCalls.map((f) => f.name || "unknown")
+              );
+
+              (async () => {
+                for (const call of functionCalls) {
+                  if (!call.name) continue;
+                  onActivityRef.current?.(`Executing tool: ${call.name}…`);
+                  try {
+                    const res = await fetch("/api/voice/tools", {
+                      method: "POST",
+                      headers: { "Content-Type": "application/json" },
+                      body: JSON.stringify({
+                        name: call.name,
+                        args: call.args,
+                        callId: call.id,
+                      }),
+                    });
+                    const data = await res.json();
+
+                    if (sessionRef.current && !isStoppingRef.current) {
+                      sessionRef.current.sendToolResponse({
+                        functionResponses: [
+                          {
+                            id: call.id,
+                            name: call.name,
+                            response: { output: data.result || data },
+                          },
+                        ],
+                      });
+                    }
+                  } catch (toolErr) {
+                    console.error(`[LiveClient] Error executing tool ${call.name}:`, toolErr);
+                    if (sessionRef.current && !isStoppingRef.current) {
+                      sessionRef.current.sendToolResponse({
+                        functionResponses: [
+                          {
+                            id: call.id,
+                            name: call.name,
+                            response: { error: "Action could not be completed." },
+                          },
+                        ],
+                      });
+                    }
+                  }
+                }
+              })();
+            }
+
             if (msg.serverContent) {
               const parts = msg.serverContent.modelTurn?.parts || [];
               for (const part of parts) {

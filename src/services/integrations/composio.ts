@@ -25,7 +25,8 @@ function getComposioClient(): Composio | null {
 }
 
 /**
- * Generates a Composio hosted OAuth Connect Link for Gmail or Google Calendar.
+ * Generates a Composio hosted OAuth Connect Link for Gmail or Google Calendar
+ * with an explicit application callback URL.
  */
 export async function getIntegrationConnectUrl(
   app: "gmail" | "googlecalendar",
@@ -40,24 +41,15 @@ export async function getIntegrationConnectUrl(
 
   try {
     const session = await composio.create(COMPOSIO_USER_ID);
-    const connectionRequest = await session.authorize(toolkitSlug);
+    const connectionRequest = await session.authorize(toolkitSlug, {
+      callbackUrl,
+    });
 
     if (!connectionRequest.redirectUrl) {
       throw new Error(`No redirect URL returned by Composio for ${app}.`);
     }
 
-    let redirectUrl = connectionRequest.redirectUrl;
-    if (callbackUrl) {
-      try {
-        const urlObj = new URL(redirectUrl);
-        urlObj.searchParams.set("callback_url", callbackUrl);
-        redirectUrl = urlObj.toString();
-      } catch {
-        // Fall back to direct redirectUrl
-      }
-    }
-
-    return { redirectUrl };
+    return { redirectUrl: connectionRequest.redirectUrl };
   } catch (err) {
     console.error(`[Composio] Error creating connect link for ${app}:`, err);
     throw err;
@@ -65,7 +57,8 @@ export async function getIntegrationConnectUrl(
 }
 
 /**
- * Checks the connection status for Gmail and Google Calendar for the stable user.
+ * Checks the connection status for Gmail and Google Calendar for jarvis-local-user.
+ * Deterministically prioritizes the most recently updated active account.
  */
 export async function getIntegrationsStatus(): Promise<IntegrationsStatusResponse> {
   const composio = getComposioClient();
@@ -79,34 +72,59 @@ export async function getIntegrationsStatus(): Promise<IntegrationsStatusRespons
   }
 
   try {
-    const listResponse = await composio.connectedAccounts.list({
+    const activeAccountsRes = await composio.connectedAccounts.list({
       userIds: [COMPOSIO_USER_ID],
+      statuses: ["ACTIVE"],
     });
 
-    const activeAccounts = listResponse.items || [];
+    const activeAccounts = activeAccountsRes.items || [];
+
+    // Deterministic sorting: newest active accounts first
+    activeAccounts.sort((a, b) => {
+      const timeA = new Date(a.updatedAt || a.createdAt || 0).getTime();
+      const timeB = new Date(b.updatedAt || b.createdAt || 0).getTime();
+      return timeB - timeA;
+    });
 
     let gmailStatus: IntegrationAccountStatus = { connected: false, email: null };
     let calendarStatus: IntegrationAccountStatus = { connected: false, email: null };
 
     for (const acc of activeAccounts) {
       const toolkitSlug = acc.toolkit?.slug?.toLowerCase() || "";
-      const status = (acc.status || "").toLowerCase();
-      const isActive = status === "active" || status === "connected";
+      const status = (acc.status || "").toUpperCase();
+      const isActive = status === "ACTIVE";
+      const accData = (acc.data || {}) as Record<string, unknown>;
 
       if (isActive && (toolkitSlug === "gmail" || toolkitSlug.includes("gmail"))) {
-        gmailStatus = {
-          connected: true,
-          email: acc.id || "Connected Account",
-          accountId: acc.id,
-        };
+        if (!gmailStatus.connected) {
+          const displayEmail =
+            (typeof accData.email === "string" && accData.email) ||
+            (typeof accData.user_email === "string" && accData.user_email) ||
+            (typeof acc.wordId === "string" && acc.wordId) ||
+            "Connected Gmail Account";
+
+          gmailStatus = {
+            connected: true,
+            email: displayEmail,
+            accountId: acc.id,
+          };
+        }
       }
 
       if (isActive && (toolkitSlug === "googlecalendar" || toolkitSlug.includes("calendar"))) {
-        calendarStatus = {
-          connected: true,
-          email: acc.id || "Connected Account",
-          accountId: acc.id,
-        };
+        if (!calendarStatus.connected) {
+          const displayEmail =
+            (typeof accData.email === "string" && accData.email) ||
+            (typeof accData.user_email === "string" && accData.user_email) ||
+            (typeof acc.wordId === "string" && acc.wordId) ||
+            "Connected Google Calendar";
+
+          calendarStatus = {
+            connected: true,
+            email: displayEmail,
+            accountId: acc.id,
+          };
+        }
       }
     }
 
@@ -127,7 +145,7 @@ export async function getIntegrationsStatus(): Promise<IntegrationsStatusRespons
 }
 
 /**
- * Read-only tool execution: Search or list emails from Gmail.
+ * Tool execution: Search or list emails from Gmail.
  */
 export async function executeGmailFetch(params: {
   query?: string;
@@ -153,7 +171,123 @@ export async function executeGmailFetch(params: {
 }
 
 /**
- * Read-only tool execution: Fetch calendar events from Google Calendar.
+ * Tool execution: Create a draft in Gmail.
+ */
+export async function executeGmailDraft(params: {
+  recipient_email?: string;
+  subject?: string;
+  body?: string;
+}): Promise<{
+  success: boolean;
+  draftId?: string;
+  recipient_email?: string;
+  subject?: string;
+  body?: string;
+  error?: string;
+}> {
+  const composio = getComposioClient();
+  if (!composio) {
+    throw new Error("Composio is not configured.");
+  }
+
+  try {
+    const session = await composio.create(COMPOSIO_USER_ID);
+    const result = (await session.execute("GMAIL_CREATE_EMAIL_DRAFT", {
+      recipient_email: params.recipient_email,
+      subject: params.subject,
+      body: params.body,
+    })) as {
+      data?: {
+        response_data?: {
+          id?: string;
+          draft_id?: string;
+        };
+      };
+      error?: string;
+    };
+
+    if (result.error) {
+      return { success: false, error: result.error };
+    }
+
+    const draftId = result.data?.response_data?.id || result.data?.response_data?.draft_id;
+    return {
+      success: true,
+      draftId,
+      recipient_email: params.recipient_email,
+      subject: params.subject,
+      body: params.body,
+    };
+  } catch (err) {
+    console.error("[Composio] Error executing GMAIL_CREATE_EMAIL_DRAFT:", err);
+    const msg = err instanceof Error ? err.message : "Failed to create draft";
+    return { success: false, error: msg };
+  }
+}
+
+/**
+ * Tool execution: Send an email via Gmail.
+ */
+export async function executeGmailSend(params: {
+  recipient_email: string;
+  subject: string;
+  body: string;
+}): Promise<{
+  success: boolean;
+  messageId?: string;
+  threadId?: string;
+  error?: string;
+}> {
+  const composio = getComposioClient();
+  if (!composio) {
+    throw new Error("Composio is not configured.");
+  }
+
+  try {
+    const session = await composio.create(COMPOSIO_USER_ID);
+    const result = (await session.execute("GMAIL_SEND_EMAIL", {
+      recipient_email: params.recipient_email,
+      subject: params.subject,
+      body: params.body,
+    })) as {
+      data?: {
+        response_data?: {
+          id?: string;
+          threadId?: string;
+        };
+      };
+      error?: string;
+    };
+
+    if (result.error) {
+      return { success: false, error: result.error };
+    }
+
+    const data = result.data as Record<string, unknown> | undefined;
+    const responseData = (data?.response_data || data) as Record<string, unknown> | undefined;
+    const messageId = (responseData?.id || responseData?.message_id || data?.id) as string | undefined;
+
+    if (!messageId) {
+      return {
+        success: false,
+        error: "Gmail API did not return a confirmed message ID.",
+      };
+    }
+
+    return {
+      success: true,
+      messageId,
+      threadId: (responseData?.threadId || data?.threadId) as string | undefined,
+    };
+  } catch (err) {
+    console.error("[Composio] Error executing GMAIL_SEND_EMAIL:", err);
+    const msg = err instanceof Error ? err.message : "Failed to send email";
+    return { success: false, error: msg };
+  }
+}
+
+/**
+ * Tool execution: Fetch calendar events from Google Calendar.
  */
 export async function executeCalendarFetch(params: {
   timeMin?: string;
@@ -169,11 +303,118 @@ export async function executeCalendarFetch(params: {
     const session = await composio.create(COMPOSIO_USER_ID);
     const result = await session.execute("GOOGLECALENDAR_EVENTS_LIST", {
       time_min: params.timeMin || new Date().toISOString(),
-      max_results: params.maxResults || 5,
+      time_max: params.timeMax,
+      max_results: params.maxResults || 10,
     });
     return result;
   } catch (err) {
     console.error("[Composio] Error executing GOOGLECALENDAR_EVENTS_LIST:", err);
     throw err;
+  }
+}
+
+/**
+ * Tool execution: Create a Google Calendar event.
+ */
+export async function executeCalendarCreate(params: {
+  summary: string;
+  start_datetime: string;
+  timezone?: string;
+  event_duration_hour?: number;
+  event_duration_minutes?: number;
+  description?: string;
+  attendees?: string[];
+}): Promise<{
+  success: boolean;
+  eventId?: string;
+  htmlLink?: string;
+  summary?: string;
+  start?: unknown;
+  error?: string;
+  raw?: unknown;
+}> {
+  const composio = getComposioClient();
+  if (!composio) {
+    throw new Error("Composio is not configured.");
+  }
+
+  try {
+    const session = await composio.create(COMPOSIO_USER_ID);
+    const result = (await session.execute("GOOGLECALENDAR_CREATE_EVENT", {
+      summary: params.summary,
+      start_datetime: params.start_datetime,
+      timezone: params.timezone || Intl.DateTimeFormat().resolvedOptions().timeZone || "UTC",
+      event_duration_hour: params.event_duration_hour ?? 1,
+      event_duration_minutes: params.event_duration_minutes ?? 0,
+      description: params.description || undefined,
+      attendees: params.attendees || undefined,
+    })) as {
+      data?: {
+        response_data?: {
+          id?: string;
+          htmlLink?: string;
+          summary?: string;
+          start?: unknown;
+        };
+      };
+      error?: string;
+    };
+
+    if (result.error) {
+      return {
+        success: false,
+        error: result.error,
+        raw: result,
+      };
+    }
+
+    const responseData = result.data?.response_data;
+    if (!responseData || !responseData.id) {
+      return {
+        success: false,
+        error: "Google Calendar did not return a valid event confirmation ID.",
+        raw: result,
+      };
+    }
+
+    return {
+      success: true,
+      eventId: responseData.id,
+      htmlLink: responseData.htmlLink,
+      summary: responseData.summary || params.summary,
+      start: responseData.start,
+      raw: result,
+    };
+  } catch (err) {
+    console.error("[Composio] Error executing GOOGLECALENDAR_CREATE_EVENT:", err);
+    const msg = err instanceof Error ? err.message : "Failed to create Google Calendar event";
+    return {
+      success: false,
+      error: msg,
+    };
+  }
+}
+
+/**
+ * Tool execution: Delete a Google Calendar event.
+ */
+export async function executeCalendarDelete(params: {
+  event_id: string;
+}): Promise<{ success: boolean; error?: string }> {
+  const composio = getComposioClient();
+  if (!composio) {
+    throw new Error("Composio is not configured.");
+  }
+
+  try {
+    const session = await composio.create(COMPOSIO_USER_ID);
+    await session.execute("GOOGLECALENDAR_DELETE_EVENT", {
+      event_id: params.event_id,
+    });
+    return { success: true };
+  } catch (err) {
+    console.error("[Composio] Error executing GOOGLECALENDAR_DELETE_EVENT:", err);
+    const msg = err instanceof Error ? err.message : "Failed to delete event";
+    return { success: false, error: msg };
   }
 }
