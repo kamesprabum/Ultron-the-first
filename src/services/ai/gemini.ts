@@ -91,7 +91,7 @@ export async function* streamJarvisResponse(
     const status = await getIntegrationsStatus();
     if (!status.gmail.connected) {
       console.log("[AI] Gmail is not connected. Yielding connection request.");
-      yield "Your Gmail isn't connected yet. Connect it and I'll check your emails. [ACTION:CONNECT_GMAIL]";
+      yield "Your Gmail isn't connected yet. Connect it and I'll check your emails. [ACTION:connect_gmail]";
       return;
     }
 
@@ -134,7 +134,7 @@ export async function* streamJarvisResponse(
     const status = await getIntegrationsStatus();
     if (!status.calendar.connected) {
       console.log("[AI] Google Calendar is not connected. Yielding connection request.");
-      yield "Your Google Calendar isn't connected yet. Connect it and I'll check today's schedule. [ACTION:CONNECT_CALENDAR]";
+      yield "Your Google Calendar isn't connected yet. Connect it and I'll check today's schedule. [ACTION:connect_googlecalendar]";
       return;
     }
 

@@ -3,6 +3,7 @@
 import { FormEvent, useCallback, useEffect, useRef, useState } from "react";
 import { useGeminiLive } from "@/services/voice/use-gemini-live";
 import { VOICE_STATE_LABELS, type VoiceState } from "@/services/voice/types";
+import { parseJarvisAction } from "@/services/ai/actions";
 
 type TextState = "IDLE" | "THINKING" | "RESPONDING" | "ERROR";
 
@@ -267,12 +268,10 @@ export function ControlCenter() {
     return TEXT_STATE_LABELS[textState];
   };
 
-  const hasConnectGmail = reply.includes("[ACTION:CONNECT_GMAIL]");
-  const hasConnectCalendar = reply.includes("[ACTION:CONNECT_CALENDAR]");
-  const cleanReply = reply
-    .replace("[ACTION:CONNECT_GMAIL]", "")
-    .replace("[ACTION:CONNECT_CALENDAR]", "")
-    .trim();
+  const currentContent = isVoiceActive && transcript ? transcript : reply;
+  const { cleanText: displayContent, action: parsedAction } = parseJarvisAction(
+    currentContent || (displayState === "THINKING" ? "Thinking…" : "")
+  );
 
   return (
     <main className="grid-bg min-h-screen px-4 py-5 sm:px-8">
@@ -356,27 +355,18 @@ export function ControlCenter() {
 
           <div className="mt-3 max-w-md min-h-[48px] text-sm leading-6 text-[var(--muted)]">
             <p className="whitespace-pre-wrap">
-              {isVoiceActive && transcript
-                ? transcript
-                : voiceError
-                ? voiceError
-                : cleanReply || (displayState === "THINKING" ? "Thinking…" : "")}
+              {voiceError || displayContent}
             </p>
-            {hasConnectGmail && (
-              <button
-                onClick={() => connectService("gmail")}
-                className="mt-3 inline-flex items-center gap-1.5 rounded-lg bg-cyan-200 px-3.5 py-1.5 text-xs font-medium text-[#062226] shadow-sm transition-opacity hover:opacity-90"
-              >
-                ✉ Connect Gmail
-              </button>
-            )}
-            {hasConnectCalendar && (
-              <button
-                onClick={() => connectService("googlecalendar")}
-                className="mt-3 inline-flex items-center gap-1.5 rounded-lg bg-cyan-200 px-3.5 py-1.5 text-xs font-medium text-[#062226] shadow-sm transition-opacity hover:opacity-90"
-              >
-                ◫ Connect Google Calendar
-              </button>
+            {parsedAction && (
+              <div className="mt-4 flex justify-center">
+                <button
+                  onClick={() => connectService(parsedAction.service)}
+                  className="inline-flex items-center gap-2 rounded-lg bg-cyan-200 px-4 py-2 text-xs font-semibold text-[#062226] shadow-sm transition-all hover:bg-cyan-100 active:scale-95"
+                >
+                  <span>{parsedAction.service === "gmail" ? "✉" : "◫"}</span>
+                  <span>{parsedAction.label}</span>
+                </button>
+              </div>
             )}
           </div>
 

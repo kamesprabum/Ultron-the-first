@@ -56,7 +56,7 @@ export function useGeminiLive(options: UseGeminiLiveOptions = {}) {
     }
 
     if (sessionRef.current) {
-      console.log("[LiveClient] Closing active Gemini Live session");
+      console.log("[LiveClient] Closing active Gemini Live session (intentional stop)");
       try {
         await sessionRef.current.close();
       } catch {
@@ -99,6 +99,8 @@ export function useGeminiLive(options: UseGeminiLiveOptions = {}) {
 
     try {
       // 1. Fetch short-lived ephemeral token from secure server-only route
+      const isReconnect = reconnectAttemptsRef.current > 0;
+      console.log(`[LiveClient] Fetching session token (reconnect: ${isReconnect})...`);
       const res = await fetch("/api/voice/session", { method: "POST" });
       if (!res.ok) {
         const errData = await res.json().catch(() => ({}));
@@ -106,6 +108,7 @@ export function useGeminiLive(options: UseGeminiLiveOptions = {}) {
       }
 
       const sessionData: EphemeralSessionResponse = await res.json();
+      console.log(`[LiveClient] Ephemeral token received for model: ${sessionData.model}`);
       onActivityRef.current?.(`Connecting to ${sessionData.model}…`);
 
       // 2. Initialize player with real-time playback state tracking
@@ -124,12 +127,12 @@ export function useGeminiLive(options: UseGeminiLiveOptions = {}) {
       });
 
       // 4. Establish WebSocket Live Session
-      console.log(`[LiveClient] Connecting to Gemini Live model: ${sessionData.model}`);
+      console.log(`[LiveClient] Initiating WebSocket connection to Gemini Live...`);
       const session = await ai.live.connect({
         model: sessionData.model,
         callbacks: {
           onopen: async () => {
-            console.log("[LiveClient] WebSocket connection established successfully");
+            console.log("[LiveClient] WebSocket handshake successful, session opened");
             onActivityRef.current?.("Gemini Live connected · Voice active");
             updateVoiceState("LISTENING");
 
@@ -139,7 +142,6 @@ export function useGeminiLive(options: UseGeminiLiveOptions = {}) {
               const recorder = new AudioCaptureStream((base64Pcm) => {
                 if (sessionRef.current && !isStoppingRef.current) {
                   try {
-                    // Use audio parameter instead of deprecated media parameter
                     sessionRef.current.sendRealtimeInput({
                       audio: {
                         mimeType: "audio/pcm;rate=16000",
@@ -167,7 +169,7 @@ export function useGeminiLive(options: UseGeminiLiveOptions = {}) {
             if (isStoppingRef.current) return;
 
             if (msg.setupComplete) {
-              console.log("[LiveClient] Gemini Live setupComplete received from server");
+              console.log("[LiveClient] Gemini Live setupComplete confirmed by server");
             }
 
             if (msg.serverContent) {
@@ -187,7 +189,7 @@ export function useGeminiLive(options: UseGeminiLiveOptions = {}) {
 
               // Interruption detection (Native Gemini Server-Side VAD)
               if (msg.serverContent.interrupted) {
-                console.log("[LiveClient] User speech interrupted JARVIS. Halting playback.");
+                console.log("[LiveClient] User speech interrupted JARVIS. Halting audio playback.");
                 player.interrupt();
                 updateVoiceState("INTERRUPTED");
                 onActivityRef.current?.("Barge-in: Interrupted JARVIS");
@@ -200,8 +202,19 @@ export function useGeminiLive(options: UseGeminiLiveOptions = {}) {
             }
           },
 
-          onerror: (err) => {
-            console.error("[LiveClient] WebSocket session error:", err);
+          onerror: (err: unknown) => {
+            let errorDetails = "Unknown WebSocket error";
+            if (err instanceof Error) {
+              errorDetails = `${err.name}: ${err.message}`;
+            } else if (typeof err === "object" && err !== null) {
+              const e = err as Record<string, unknown>;
+              errorDetails = e.message ? String(e.message) : (e.type ? `Event (${e.type})` : "WebSocket Error Event");
+            }
+            console.error(`[LiveClient] WebSocket session error: ${errorDetails}`, {
+              currentState: voiceStateRef.current,
+              reconnectAttempts: reconnectAttemptsRef.current,
+              isStopping: isStoppingRef.current,
+            });
             if (!isStoppingRef.current) {
               setErrorMessage("Live session connection error.");
               updateVoiceState("ERROR");
@@ -210,12 +223,17 @@ export function useGeminiLive(options: UseGeminiLiveOptions = {}) {
           },
 
           onclose: (e) => {
-            console.log(`[LiveClient] WebSocket closed: code=${e.code}, reason="${e.reason}", clean=${e.wasClean}`);
+            const isIntentional = isStoppingRef.current;
+            const isClean = e.wasClean || e.code === 1000;
+            console.log(
+              `[LiveClient] WebSocket closed: code=${e.code}, reason="${e.reason || "none"}", wasClean=${e.wasClean}, isIntentional=${isIntentional}, state=${voiceStateRef.current}`
+            );
+
             if (!isStoppingRef.current) {
-              // Only attempt reconnect for abnormal closures (code !== 1000)
-              if (e.code !== 1000 && reconnectAttemptsRef.current < 2) {
+              // Only attempt reconnect for unexpected/abnormal closures (code !== 1000)
+              if (!isClean && reconnectAttemptsRef.current < 2) {
                 reconnectAttemptsRef.current += 1;
-                console.log(`[LiveClient] Attempting reconnect (${reconnectAttemptsRef.current}/2)...`);
+                console.log(`[LiveClient] Triggering automatic reconnect (${reconnectAttemptsRef.current}/2)...`);
                 updateVoiceState("RECONNECTING");
                 onActivityRef.current?.("Session disconnected. Reconnecting…");
                 setTimeout(() => {
@@ -223,8 +241,8 @@ export function useGeminiLive(options: UseGeminiLiveOptions = {}) {
                 }, 1000);
               } else {
                 updateVoiceState("IDLE");
-                if (e.code !== 1000) {
-                  setErrorMessage(`Connection closed (${e.reason || e.code}). Click the orb to restart.`);
+                if (!isClean) {
+                  setErrorMessage(`Connection closed (${e.reason || `code ${e.code}`}). Click the orb to restart.`);
                 }
                 onActivityRef.current?.("Session closed");
               }
