@@ -80,12 +80,20 @@ interface AgentClassification {
   eventDetails?: {
     summary?: string;
     start_datetime?: string;
-    event_duration_hour?: number;
-    event_duration_minutes?: number;
+    duration_minutes?: number;
     description?: string;
     is_incomplete?: boolean;
     clarification_prompt?: string | null;
   } | null;
+}
+
+function formatDuration(minutes: number): string {
+  if (minutes === 60) return "1 hour";
+  if (minutes < 60) return `${minutes} minutes`;
+  const h = Math.floor(minutes / 60);
+  const m = minutes % 60;
+  if (m === 0) return `${h} hours`;
+  return `${h} hour${h > 1 ? "s" : ""} ${m} minute${m > 1 ? "s" : ""}`;
 }
 
 async function classifyIntentAndExtract(
@@ -94,7 +102,7 @@ async function classifyIntentAndExtract(
 ): Promise<AgentClassification> {
   const ai = getClient();
   const now = new Date();
-  const timezone = Intl.DateTimeFormat().resolvedOptions().timeZone || "UTC";
+  const timezone = Intl.DateTimeFormat().resolvedOptions().timeZone || "Asia/Kolkata";
 
   const historyContext = history
     .slice(-6)
@@ -119,11 +127,11 @@ Classify into exactly one intent:
 6. "CALENDAR_CONFIRM_CREATE": User is confirming adding a previously proposed calendar event from history (e.g. "yes", "add it", "confirm", "schedule it").
 7. "GENERAL_CHAT": General conversation or queries unrelated to Gmail or Calendar tools.
 
-CRITICAL INSTRUCTIONS:
+CRITICAL DURATION & PARAMETER INSTRUCTIONS:
+- For CALENDAR_SCHEDULE_REQUEST: Extract summary, start_datetime formatted as ISO YYYY-MM-DDTHH:MM:SS in ${timezone}. Calculate duration_minutes as total integer minutes (e.g., 23 hours = 1380, 2 hours = 120, 1h30m = 90, 30 min = 30).
+- If time or date is missing, set is_incomplete to true and provide clarification_prompt (e.g. "What time would you like to schedule the meeting?").
 - If user says "yes", "send it", "confirm", or similar after an email draft was prepared in history, you MUST return GMAIL_CONFIRM_SEND and extract emailDetails from the previous draft in history.
 - If user says "yes", "add it", "confirm", or similar after a calendar event was proposed in history, you MUST return CALENDAR_CONFIRM_CREATE and extract eventDetails from the previous proposal in history.
-- For GMAIL_DRAFT: Extract recipient_name, recipient_email (default to "<name>@example.com" if not given), subject, and body.
-- For CALENDAR_SCHEDULE_REQUEST: Extract summary, start_datetime formatted as ISO YYYY-MM-DDTHH:MM:SS in ${timezone}. If time or date is missing, set is_incomplete to true and provide clarification_prompt.
 
 Return ONLY valid JSON matching this schema:
 {
@@ -137,8 +145,7 @@ Return ONLY valid JSON matching this schema:
   "eventDetails": {
     "summary": "string",
     "start_datetime": "string",
-    "event_duration_hour": 1,
-    "event_duration_minutes": 0,
+    "duration_minutes": 60,
     "description": "string",
     "is_incomplete": false,
     "clarification_prompt": null
@@ -155,7 +162,9 @@ Return ONLY valid JSON matching this schema:
       },
     });
 
-    return JSON.parse(res.text || "{}") as AgentClassification;
+    const parsed = JSON.parse(res.text || "{}");
+    const item = Array.isArray(parsed) ? parsed[0] : parsed;
+    return item as AgentClassification;
   } catch (err) {
     console.error("[AI] Error in agent classification:", err);
     return { intent: "GENERAL_CHAT" };
@@ -303,6 +312,7 @@ Ready to send. Shall I send it?`;
 
     console.log(`[JARVIS TRACE] classified intent=CALENDAR_SCHEDULE_REQUEST (safety hold: awaiting confirmation)`);
     const start = ev?.start_datetime ? new Date(ev.start_datetime) : new Date(Date.now() + 86400000);
+    const durationStr = formatDuration(ev?.duration_minutes ?? 60);
     const timeStr = isNaN(start.getTime())
       ? ev?.start_datetime || "tomorrow"
       : start.toLocaleString(undefined, {
@@ -313,7 +323,7 @@ Ready to send. Shall I send it?`;
           minute: "2-digit",
         });
 
-    yield `I've prepared the event "${ev?.summary || "Meeting"}" for ${timeStr}. Shall I add it to your Google Calendar?`;
+    yield `I've prepared the event "${ev?.summary || "Meeting"}" for ${timeStr} (${durationStr}). Shall I add it to your Google Calendar?`;
     console.log(`[JARVIS TRACE] final response generated (event proposed)`);
     return;
   }
@@ -333,14 +343,14 @@ Ready to send. Shall I send it?`;
     const ev = classification.eventDetails;
     const summary = ev?.summary || "Scheduled Event";
     const startDatetime = ev?.start_datetime || new Date(Date.now() + 86400000).toISOString().slice(0, 19);
+    const durationMinutes = ev?.duration_minutes ?? 60;
 
     try {
-      console.log(`[JARVIS TRACE] executing tool=GOOGLECALENDAR_CREATE_EVENT`);
+      console.log(`[JARVIS TRACE] executing tool=GOOGLECALENDAR_CREATE_EVENT duration_minutes=${durationMinutes}`);
       const createRes = await executeCalendarCreate({
         summary,
         start_datetime: startDatetime,
-        event_duration_hour: ev?.event_duration_hour ?? 1,
-        event_duration_minutes: ev?.event_duration_minutes ?? 0,
+        duration_minutes: durationMinutes,
         description: ev?.description,
       });
 

@@ -91,7 +91,7 @@ const LIVE_TOOLS: Tool[] = [
             },
             duration_minutes: {
               type: Type.INTEGER,
-              description: "Duration of the event in minutes (default 60).",
+              description: "Total duration in minutes (e.g. 1380 for 23 hours, 120 for 2 hours, 90 for 1h30m, 30 for 30m).",
             },
             confirmed_by_user: {
               type: Type.BOOLEAN,

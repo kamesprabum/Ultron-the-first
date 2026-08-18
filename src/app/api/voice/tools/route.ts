@@ -150,11 +150,11 @@ export async function POST(req: NextRequest) {
         });
       }
 
-      console.log(`[JARVIS TRACE] executing tool=GOOGLECALENDAR_CREATE_EVENT`);
+      console.log(`[JARVIS TRACE] executing tool=GOOGLECALENDAR_CREATE_EVENT duration_minutes=${args?.duration_minutes || 60}`);
       const createRes = await executeCalendarCreate({
         summary: args?.summary || "Scheduled Meeting",
         start_datetime: args?.start_datetime || new Date(Date.now() + 86400000).toISOString().slice(0, 19),
-        event_duration_minutes: args?.duration_minutes || 60,
+        duration_minutes: args?.duration_minutes || 60,
       });
 
       console.log(`[JARVIS TRACE] tool success=${createRes.success}`);

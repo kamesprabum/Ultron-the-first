@@ -320,6 +320,7 @@ export async function executeCalendarCreate(params: {
   summary: string;
   start_datetime: string;
   timezone?: string;
+  duration_minutes?: number;
   event_duration_hour?: number;
   event_duration_minutes?: number;
   description?: string;
@@ -338,18 +339,44 @@ export async function executeCalendarCreate(params: {
     throw new Error("Composio is not configured.");
   }
 
+  // Convert any incoming duration representation into valid hours and 0-59 minutes
+  let totalMinutes = 60; // default 1 hour
+  if (params.duration_minutes !== undefined && params.duration_minutes > 0) {
+    totalMinutes = Math.round(params.duration_minutes);
+  } else if (params.event_duration_hour !== undefined || params.event_duration_minutes !== undefined) {
+    totalMinutes = (params.event_duration_hour ?? 0) * 60 + (params.event_duration_minutes ?? 0);
+    if (totalMinutes <= 0) totalMinutes = 60;
+  }
+
+  const hours = Math.floor(totalMinutes / 60);
+  const minutes = totalMinutes % 60;
+
+  const timezone = params.timezone || Intl.DateTimeFormat().resolvedOptions().timeZone || "Asia/Kolkata";
+  const startDate = new Date(params.start_datetime);
+  const calculatedEnd = isNaN(startDate.getTime())
+    ? "unknown"
+    : new Date(startDate.getTime() + totalMinutes * 60 * 1000).toISOString();
+
+  console.log(`[JARVIS CALENDAR TRACE] summary="${params.summary}"`);
+  console.log(`[JARVIS CALENDAR TRACE] start_datetime="${params.start_datetime}"`);
+  console.log(`[JARVIS CALENDAR TRACE] duration_minutes=${totalMinutes} (hours=${hours}, minutes=${minutes})`);
+  console.log(`[JARVIS CALENDAR TRACE] calculated_end_datetime="${calculatedEnd}"`);
+  console.log(`[JARVIS CALENDAR TRACE] timezone="${timezone}"`);
+  console.log(`[JARVIS CALENDAR TRACE] tool name=GOOGLECALENDAR_CREATE_EVENT`);
+
   try {
     const session = await composio.create(COMPOSIO_USER_ID);
     const result = (await session.execute("GOOGLECALENDAR_CREATE_EVENT", {
       summary: params.summary,
       start_datetime: params.start_datetime,
-      timezone: params.timezone || Intl.DateTimeFormat().resolvedOptions().timeZone || "UTC",
-      event_duration_hour: params.event_duration_hour ?? 1,
-      event_duration_minutes: params.event_duration_minutes ?? 0,
+      timezone,
+      event_duration_hour: hours,
+      event_duration_minutes: minutes,
       description: params.description || undefined,
       attendees: params.attendees || undefined,
     })) as {
       data?: {
+        id?: string;
         response_data?: {
           id?: string;
           htmlLink?: string;
@@ -361,6 +388,8 @@ export async function executeCalendarCreate(params: {
     };
 
     if (result.error) {
+      console.log(`[JARVIS CALENDAR TRACE] Composio success=false`);
+      console.log(`[JARVIS CALENDAR TRACE] API error message: ${result.error}`);
       return {
         success: false,
         error: result.error,
@@ -368,8 +397,12 @@ export async function executeCalendarCreate(params: {
       };
     }
 
-    const responseData = result.data?.response_data;
-    if (!responseData || !responseData.id) {
+    const data = result.data as Record<string, unknown> | undefined;
+    const responseData = (data?.response_data || data) as Record<string, unknown> | undefined;
+    const eventId = (responseData?.id || data?.id) as string | undefined;
+
+    if (!eventId) {
+      console.log(`[JARVIS CALENDAR TRACE] Composio success=false (missing event ID)`);
       return {
         success: false,
         error: "Google Calendar did not return a valid event confirmation ID.",
@@ -377,17 +410,22 @@ export async function executeCalendarCreate(params: {
       };
     }
 
+    console.log(`[JARVIS CALENDAR TRACE] Composio success=true`);
+    console.log(`[JARVIS CALENDAR TRACE] returned event ID=${eventId}`);
+
     return {
       success: true,
-      eventId: responseData.id,
-      htmlLink: responseData.htmlLink,
-      summary: responseData.summary || params.summary,
-      start: responseData.start,
+      eventId,
+      htmlLink: (responseData?.htmlLink || data?.htmlLink) as string | undefined,
+      summary: (responseData?.summary || params.summary) as string,
+      start: responseData?.start || data?.start,
       raw: result,
     };
   } catch (err) {
-    console.error("[Composio] Error executing GOOGLECALENDAR_CREATE_EVENT:", err);
     const msg = err instanceof Error ? err.message : "Failed to create Google Calendar event";
+    console.error("[Composio] Error executing GOOGLECALENDAR_CREATE_EVENT:", err);
+    console.log(`[JARVIS CALENDAR TRACE] Composio success=false`);
+    console.log(`[JARVIS CALENDAR TRACE] API error message: ${msg}`);
     return {
       success: false,
       error: msg,
