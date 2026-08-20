@@ -7,6 +7,12 @@ import {
   executeCalendarFetch,
   executeCalendarCreate,
 } from "@/services/integrations/composio";
+import {
+  saveMemory,
+  searchMemories,
+  deleteMatchingMemory,
+  type MemoryCategory,
+} from "@/services/memory";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -163,6 +169,75 @@ export async function POST(req: NextRequest) {
       return NextResponse.json({
         success: createRes.success,
         result: createRes,
+      });
+    }
+
+    if (name === "save_memory") {
+      console.log(`[JARVIS TRACE] voice memory tool: save_memory content="${args?.content}"`);
+      const content = String(args?.content || "").trim();
+      const category = (args?.category as MemoryCategory) || "general";
+
+      const res = await saveMemory({
+        userId: COMPOSIO_USER_ID,
+        content,
+        category,
+        source: "voice",
+        importance: category === "preference" || category === "fact" ? 4 : 3,
+      });
+
+      if (!res.success) {
+        return NextResponse.json({
+          success: false,
+          error: res.error || "Unable to save memory.",
+        });
+      }
+
+      return NextResponse.json({
+        success: true,
+        result: {
+          status: "MEMORY_SAVED",
+          content,
+          message: `I've saved that to your persistent memory: "${content}".`,
+        },
+      });
+    }
+
+    if (name === "search_memories") {
+      console.log(`[JARVIS TRACE] voice memory tool: search_memories query="${args?.query}"`);
+      const query = String(args?.query || "").trim();
+      const results = await searchMemories({
+        userId: COMPOSIO_USER_ID,
+        query,
+        limit: 5,
+      });
+
+      return NextResponse.json({
+        success: true,
+        result: {
+          query,
+          memories: results.map((m) => m.content),
+          count: results.length,
+        },
+      });
+    }
+
+    if (name === "forget_memory") {
+      console.log(`[JARVIS TRACE] voice memory tool: forget_memory query="${args?.query}"`);
+      const query = String(args?.query || "").trim();
+      const delRes = await deleteMatchingMemory({
+        userId: COMPOSIO_USER_ID,
+        query,
+      });
+
+      return NextResponse.json({
+        success: delRes.success,
+        result: {
+          deletedCount: delRes.deletedCount,
+          message:
+            delRes.deletedCount > 0
+              ? `I've removed that from your persistent memory.`
+              : `I couldn't find any memory matching "${query}".`,
+        },
       });
     }
 

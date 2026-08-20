@@ -1,6 +1,8 @@
 import "server-only";
 import { GoogleGenAI, Modality, Type, type Tool } from "@google/genai";
 import { JARVIS_SYSTEM_INSTRUCTION } from "../ai/personality";
+import { COMPOSIO_USER_ID } from "../integrations/composio";
+import { getMemories, formatMemoriesForContext } from "../memory";
 import type { EphemeralSessionResponse } from "./types";
 
 const DEFAULT_LIVE_MODEL = "gemini-3.1-flash-live-preview";
@@ -8,12 +10,15 @@ const DEFAULT_VOICE_NAME = "Puck";
 
 const systemInstruction = `${JARVIS_SYSTEM_INSTRUCTION}
 
-You have real tool integrations with the user's Gmail and Google Calendar.
+You have real tool integrations with the user's Gmail, Google Calendar, and persistent memory.
 - When the user asks to check, read, or list emails, call \`read_gmail_inbox\`.
 - When the user asks to write/send an email: first call \`draft_or_send_email\` with confirmed_by_user=false to prepare the draft, speak the draft details to the user, and ask "Ready to send. Shall I send it?". Only after the user clearly confirms, call \`draft_or_send_email\` with confirmed_by_user=true.
 - When the user asks what is on their calendar or to check events, call \`read_calendar_schedule\`.
 - When the user asks to schedule an event: if any date/time details are missing, ask for them. Then call \`create_calendar_event\` with confirmed_by_user=false to propose it. Once the user confirms, call \`create_calendar_event\` with confirmed_by_user=true.
-- NEVER claim you sent an email or added an event unless the corresponding tool returned a successful result.`;
+- When the user says "remember that...", "my name is...", or explicitly asks you to store a fact/preference, call \`save_memory\`.
+- When the user asks what you remember or queries a remembered detail, call \`search_memories\`.
+- When the user asks to forget a specific memory or preference, call \`forget_memory\`.
+- NEVER claim you sent an email, added an event, or saved a memory unless the corresponding tool returned a successful result.`;
 
 const LIVE_TOOLS: Tool[] = [
   {
@@ -100,6 +105,52 @@ const LIVE_TOOLS: Tool[] = [
           },
         },
       },
+      {
+        name: "save_memory",
+        description: "Saves a high-confidence user fact, preference, or instruction to persistent memory.",
+        parameters: {
+          type: Type.OBJECT,
+          required: ["content"],
+          properties: {
+            content: {
+              type: Type.STRING,
+              description: "The concise factual statement to remember (e.g. 'User name is Kames', 'User prefers concise answers').",
+            },
+            category: {
+              type: Type.STRING,
+              description: "Category: 'fact', 'preference', 'instruction', 'project', 'contact', 'general'.",
+            },
+          },
+        },
+      },
+      {
+        name: "search_memories",
+        description: "Searches the user's persistent memories for remembered facts, preferences, or details.",
+        parameters: {
+          type: Type.OBJECT,
+          required: ["query"],
+          properties: {
+            query: {
+              type: Type.STRING,
+              description: "Search keyword or topic to look up in persistent memory.",
+            },
+          },
+        },
+      },
+      {
+        name: "forget_memory",
+        description: "Deletes a specific memory from user's persistent memory when requested by user.",
+        parameters: {
+          type: Type.OBJECT,
+          required: ["query"],
+          properties: {
+            query: {
+              type: Type.STRING,
+              description: "The topic or fact to remove from persistent memory.",
+            },
+          },
+        },
+      },
     ],
   },
 ];
@@ -112,6 +163,13 @@ export async function createLiveEphemeralToken(): Promise<EphemeralSessionRespon
 
   const model = process.env.GEMINI_LIVE_MODEL?.trim() || DEFAULT_LIVE_MODEL;
   const voiceName = process.env.GEMINI_VOICE_NAME?.trim() || DEFAULT_VOICE_NAME;
+
+  // Retrieve user's existing persistent memories to prime the voice session
+  const activeMemories = await getMemories({ userId: COMPOSIO_USER_ID, limit: 15 });
+  const memoryBlock = formatMemoriesForContext(activeMemories);
+  const fullSystemInstruction = memoryBlock
+    ? `${systemInstruction}\n\n${memoryBlock}`
+    : systemInstruction;
 
   const ai = new GoogleGenAI({
     apiKey,
@@ -130,7 +188,7 @@ export async function createLiveEphemeralToken(): Promise<EphemeralSessionRespon
         config: {
           responseModalities: [Modality.AUDIO],
           systemInstruction: {
-            parts: [{ text: systemInstruction }],
+            parts: [{ text: fullSystemInstruction }],
           },
           speechConfig: {
             voiceConfig: {
