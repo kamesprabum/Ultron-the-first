@@ -17,6 +17,101 @@ import {
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 
+function cleanHtmlSnippet(text: string): string {
+  if (typeof text !== "string") return String(text || "");
+  return text
+    .replace(/<[^>]*>/g, " ")
+    .replace(/&nbsp;/gi, " ")
+    .replace(/&amp;/gi, "&")
+    .replace(/&lt;/gi, "<")
+    .replace(/&gt;/gi, ">")
+    .replace(/&quot;/gi, '"')
+    .replace(/&#39;/gi, "'")
+    .replace(/[\u200B-\u200D\uFEFF\u034F]/g, "")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+function extractCleanText(val: unknown): string {
+  if (!val) return "";
+  if (typeof val === "string") {
+    try {
+      const parsed = JSON.parse(val);
+      if (typeof parsed === "object" && parsed !== null) {
+        return extractCleanText(parsed.body || parsed.text || parsed.snippet || parsed.message || parsed);
+      }
+    } catch {
+      // It is plain text
+    }
+    return cleanHtmlSnippet(val);
+  }
+  if (typeof val === "object") {
+    const obj = val as Record<string, unknown>;
+    return extractCleanText(obj.body || obj.text || obj.snippet || obj.preview || "");
+  }
+  return String(val);
+}
+
+interface RawGmailMessage {
+  sender?: string;
+  from?: string;
+  subject?: string;
+  messageText?: string;
+  preview?: string;
+  snippet?: string;
+  messageTimestamp?: string;
+  date?: string;
+}
+
+function sanitizeGmailForVoice(
+  rawResult: unknown,
+  maxResults: number = 5
+): {
+  count: number;
+  emails: Array<{
+    sender: string;
+    subject: string;
+    date: string;
+    preview: string;
+  }>;
+} {
+  const dataObj = rawResult as {
+    data?: { messages?: RawGmailMessage[]; response_data?: { messages?: RawGmailMessage[] } };
+  };
+  const rawList: RawGmailMessage[] = Array.isArray(dataObj?.data?.messages)
+    ? dataObj.data.messages
+    : Array.isArray(dataObj?.data?.response_data?.messages)
+    ? dataObj.data.response_data.messages
+    : [];
+
+  const emails = rawList.slice(0, maxResults).map((m) => {
+    const rawSender =
+      typeof m.sender === "string"
+        ? m.sender
+        : typeof m.from === "string"
+        ? m.from
+        : "Unknown Sender";
+    const sender = rawSender.trim();
+    const subject =
+      typeof m.subject === "string" && m.subject.trim() ? m.subject.trim() : "(No subject)";
+    const rawSnippet = m.preview || m.snippet || m.messageText || "";
+    const preview = extractCleanText(rawSnippet).slice(0, 180);
+    const date =
+      typeof m.messageTimestamp === "string"
+        ? m.messageTimestamp
+        : typeof m.date === "string"
+        ? m.date
+        : "";
+
+    return { sender, subject, date, preview };
+  });
+
+  return {
+    count: emails.length,
+    emails,
+  };
+}
+
 export async function POST(req: NextRequest) {
   try {
     const body = await req.json();
@@ -47,13 +142,26 @@ export async function POST(req: NextRequest) {
         query: args?.query,
       })) as { data?: { messages?: unknown[] } };
 
-      const count = emailData?.data?.messages?.length || 0;
+      const sanitizedResult = sanitizeGmailForVoice(emailData, args?.max_results || 5);
+      const payloadString = JSON.stringify(sanitizedResult);
+      const payloadSize = Buffer.byteLength(payloadString);
+
       console.log(`[JARVIS TRACE] tool success=true`);
-      console.log(`[JARVIS TRACE] tool result count=${count}`);
+      console.log(`[JARVIS TRACE] tool result count=${sanitizedResult.count} (voice payload size: ${payloadSize} bytes)`);
+
+      // Hard safety guard: truncate if somehow exceeds 8KB
+      if (payloadSize > 8192) {
+        sanitizedResult.emails = sanitizedResult.emails.map((e) => ({
+          sender: e.sender.slice(0, 50),
+          subject: e.subject.slice(0, 80),
+          date: e.date.slice(0, 30),
+          preview: e.preview.slice(0, 100),
+        }));
+      }
 
       return NextResponse.json({
         success: true,
-        result: emailData,
+        result: sanitizedResult,
       });
     }
 

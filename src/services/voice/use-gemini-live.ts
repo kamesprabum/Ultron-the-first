@@ -205,6 +205,7 @@ export function useGeminiLive(options: UseGeminiLiveOptions = {}) {
                           },
                         ],
                       });
+                      console.log(`[LiveClient] Tool response sent to Gemini Live for ${call.name} (callId: ${call.id})`);
                     }
                   } catch (toolErr) {
                     console.error(`[LiveClient] Error executing tool ${call.name}:`, toolErr);
